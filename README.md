@@ -1,6 +1,6 @@
 # Connect-Force
 
-Connect-Forceは、現場の記録、会話、画面上の情報を根拠とともに整理し、人の承認を通して次の業務へつなぐAIエージェントです。設計の中心は「AIが選び、コードが守り、人が確定する」です。
+Connect-Forceは、現場の記録、会話、画面上の情報を根拠とともに整理し、人の承認を通して次の業務へつなぐAIエージェントです。設計の中心は「AIが選び、人が確定する」です。
 
 ![Connect-Force](./hackathon-kit/assets/connect-force-hero.png)
 
