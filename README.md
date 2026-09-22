@@ -85,7 +85,7 @@ APIキーは環境変数で設定し、ソース、Git、チャット、画面�
 ## ハッカソン資料
 
 - [紹介動画リンク先](https://youtu.be/-M7Yo9JgqXE)
-- [紹介パンフレット](https://drive.google.com/file/d/18QcyHRg3RN7bBtcFcSCe-44j_hj5mifu/view?usp=sharing))
+- [紹介パンフレット](https://drive.google.com/file/d/18QcyHRg3RN7bBtcFcSCe-44j_hj5mifu/view?usp=sharing)
 
 ## ライセンス
 
