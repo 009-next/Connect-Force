@@ -313,36 +313,42 @@ def _named_in(text: str) -> bool:
 
 
 
+def _txt(v, limit: int) -> str:
+    """AI の値を文字にする。JSON の null は空として扱う（`str(None)` が「None」という文字になり、題や
+    シート名に出てしまうのを防ぐ。スキーマが required でも、値が null で来ることはある）。"""
+    return str(v if v is not None else "")[:limit]
+
+
 def validate(inp: dict, tnorm: str, names: set[str]) -> tuple[dict | None, list[str]]:
     """AI の答えを検査する。個人情報・会話に出た人名・数字列・指示に従った形跡があれば、全体を採用しない。引用が実在しなければ、赤丸を外す。"""
     why: list[str] = []
     if not isinstance(inp, dict):
         return None, ["形式が正しくない"]
-    und = str(inp.get("understanding", "")).strip()
+    und = _txt(inp.get("understanding"), 300).strip()
     tb, rp, em = inp.get("table"), inp.get("report"), inp.get("email")
     if not und or not isinstance(tb, dict) or not isinstance(rp, dict) or not isinstance(em, dict):
         return None, ["理解・表・文書・メールのどれかがない"]
     raw_cols = tb.get("columns") if isinstance(tb.get("columns"), list) else []   # 数値・文字列など、リストでない形も来る
-    cols = [str(c)[:60] for c in raw_cols][:MAX_TABLE_COLS]
-    rows = [[str(c)[:200] for c in r][:len(cols)] for r in (tb.get("rows") if isinstance(tb.get("rows"), list) else []) if isinstance(r, list)][:MAX_TABLE_ROWS]
+    cols = [_txt(c, 60) for c in raw_cols][:MAX_TABLE_COLS]
+    rows = [[_txt(c, 200) for c in r][:len(cols)] for r in (tb.get("rows") if isinstance(tb.get("rows"), list) else []) if isinstance(r, list)][:MAX_TABLE_ROWS]
     if not cols or not rows:
         return None, ["表が空"]
     sections = []
     for s in (rp.get("sections") if isinstance(rp.get("sections"), list) else [])[:MAX_SECTIONS]:
         if isinstance(s, dict) and isinstance(s.get("paragraphs"), list):
-            sections.append({"heading": str(s.get("heading", ""))[:80], "paragraphs": [str(p)[:800] for p in s["paragraphs"]][:6]})
+            sections.append({"heading": _txt(s.get("heading"), 80), "paragraphs": [_txt(p, 800) for p in s["paragraphs"]][:6]})
     if not sections:
         return None, ["文書が空"]
-    subject, body = str(em.get("subject", "")).strip()[:120], str(em.get("body", "")).strip()[:MAX_BODY]
+    subject, body = _txt(em.get("subject"), 120).strip(), _txt(em.get("body"), MAX_BODY).strip()
     if not subject or not body:
         return None, ["メールの件名か本文がない"]
-    nxt = [{"label": str(n.get("label", ""))[:60], "reason": str(n.get("reason", ""))[:160]}
+    nxt = [{"label": _txt(n.get("label"), 60), "reason": _txt(n.get("reason"), 160)}
            for n in (inp.get("next_work") if isinstance(inp.get("next_work"), list) else []) if isinstance(n, dict) and n.get("label")][:MAX_NEXT]
     targets = []
     for t in (inp.get("targets") if isinstance(inp.get("targets"), list) else [])[:MAX_TARGETS]:
-        if not isinstance(t, dict) or not str(t.get("label", "")).strip():
+        if not isinstance(t, dict) or not _txt(t.get("label"), 60).strip():
             continue
-        target = {"label": str(t["label"])[:60], "visible_basis": str(t.get("visible_basis", ""))[:200],
+        target = {"label": _txt(t["label"], 60), "visible_basis": _txt(t.get("visible_basis"), 200),
                   "confidence": t.get("confidence") if t.get("confidence") in ("low", "medium") else "low", "box": None, "evidence": ""}
         if _box_ok(t.get("box")):
             b = [float(v) for v in t["box"]]
@@ -350,14 +356,14 @@ def validate(inp: dict, tnorm: str, names: set[str]) -> tuple[dict | None, list[
             target["box"] = [round(x, 4), round(y, 4), round(min(b[2], 1 - x), 4), round(min(b[3], 1 - y), 4)]
         else:
             why.append(f"対象物「{target['label']}」の位置が範囲外か広すぎる: 赤丸を付けない")
-        if talk._quote_ok(str(t.get("evidence", "")), tnorm):
-            target["evidence"] = str(t["evidence"])[:200]
+        if talk._quote_ok(_txt(t.get("evidence"), 200), tnorm):
+            target["evidence"] = _txt(t["evidence"], 200)
         else:
             why.append(f"対象物「{target['label']}」は、会話に実在しない引用: 赤丸を付けない")
             target["box"] = None   # 会話の根拠がない指さしは、しない
         targets.append(target)
-    res = {"understanding": und[:300], "targets": targets, "table": {"title": str(tb.get("title", ""))[:60] or "表", "columns": cols, "rows": rows},
-           "report": {"title": str(rp.get("title", ""))[:100] or "報告", "sections": sections}, "email": {"subject": subject, "body": body}, "next_work": nxt}
+    res = {"understanding": und, "targets": targets, "table": {"title": _txt(tb.get("title"), 60) or "表", "columns": cols, "rows": rows},
+           "report": {"title": _txt(rp.get("title"), 100) or "報告", "sections": sections}, "email": {"subject": subject, "body": body}, "next_work": nxt}
     everything = " ".join(_texts(res))
     affirm = " ".join(vision._affirmative(x) for x in _texts(res))
     if talk.TALK_PRIVATE.search(affirm) or LONG_DIGITS.search(everything):
@@ -411,14 +417,14 @@ def _repair_tables(conn, org_id: str, context_text: str, client_factory, cfg: di
     if not tu or not isinstance(tu["input"], dict):
         return [], r.cost_usd or 0.0
     out = []
-    for t in (tu["input"].get("tables") if isinstance(tu["input"].get("tables"), list) else []):
+    for t in (tu["input"].get("tables") if isinstance(tu["input"].get("tables"), list) else [])[:MAX_TABLE_CANDIDATES]:
         if not isinstance(t, dict):
             continue
-        cols = [str(c)[:60] for c in t.get("columns", [])][:MAX_TABLE_COLS] if isinstance(t.get("columns"), list) else []
-        rows = [[str(c)[:200] for c in r2][:len(cols)] for r2 in (t.get("rows") if isinstance(t.get("rows"), list) else []) if isinstance(r2, list)][:MAX_TABLE_ROWS]
+        cols = [_txt(c, 60) for c in t.get("columns", [])][:MAX_TABLE_COLS] if isinstance(t.get("columns"), list) else []
+        rows = [[_txt(c, 200) for c in r2][:len(cols)] for r2 in (t.get("rows") if isinstance(t.get("rows"), list) else []) if isinstance(r2, list)][:MAX_TABLE_ROWS]
         if not cols or not rows:
             continue
-        out.append({"title": str(t.get("title", ""))[:60] or "表", "columns": cols, "rows": rows})
+        out.append({"title": _txt(t.get("title"), 60) or f"候補{len(out) + 1}", "columns": cols, "rows": rows})
     return out, r.cost_usd or 0.0
 
 

@@ -198,6 +198,29 @@ def test_missing_parts_are_rejected():
     assert fusion.validate("x", TN, set())[0] is None
 
 
+def test_a_json_null_from_the_ai_never_becomes_the_text_none():
+    """スキーマが required でも、値が null で来ることはある。「None」という文字が、題やシート名に出てはいけない。"""
+    res, _ = val(table={"title": None, "columns": ["項目"], "rows": [["値"]]}, report={"title": None, "sections": GOOD["report"]["sections"]},
+                 next_work=[{"label": "確認する", "reason": None}])
+    assert res["table"]["title"] == "表" and res["report"]["title"] == "報告"
+    assert res["next_work"][0]["reason"] == ""
+    assert "None" not in json.dumps(res, ensure_ascii=False)
+    assert docgen._sheet_name(res["table"]["title"]) == "表"
+    # 見出し・段落・対象物の値が null のときも同じ
+    res2, _ = val(report={"title": "t", "sections": [{"heading": None, "paragraphs": [None, "本文"]}]},
+                  targets=[{"label": None, "box": [0.1, 0.1, 0.2, 0.2], "evidence": "点検してほしいです"}, GOOD["targets"][0]])
+    assert res2["report"]["sections"][0]["heading"] == "" and res2["report"]["sections"][0]["paragraphs"][0] == ""
+    assert [t["label"] for t in res2["targets"]] == [GOOD["targets"][0]["label"]]   # 名前のない対象物は、捨てる
+    assert "None" not in json.dumps(res2, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("field", ["understanding", "email"])
+def test_a_null_in_a_required_field_is_refused_not_shown_as_none(field):
+    over = {"understanding": None} if field == "understanding" else {"email": {"subject": None, "body": None}}
+    res, why = val(**over)
+    assert res is None and why
+
+
 def test_the_email_body_is_not_aggressively_shortened():
     """下書きは、できるだけ削らない（Gmail の URL は自前の短いリンクを経由するので、長い本文をそのまま持てる）。"""
     long_body = "検討事項。" * 500   # 2500 文字。旧・上限（1200）なら切り詰められていた
@@ -403,6 +426,47 @@ def test_a_broken_table_with_several_candidates_becomes_a_multi_sheet_excel(conn
     openpyxl = pytest.importorskip("openpyxl")
     mime, data = fusion.download(conn, alice, fid, "table.xlsx")
     assert openpyxl.load_workbook(io.BytesIO(data)).sheetnames == ["候補1", "候補2"]
+
+
+@pytest.mark.parametrize("tables,kept", [
+    ([{"title": "t", "columns": ["a"], "rows": [["1"]]}] * 12, fusion.MAX_TABLE_CANDIDATES),   # 多すぎる候補は、上限まで
+    ("これは文字列", 0), ([1, 2, 3], 0), ([{"title": "t"}], 0),                                  # 形が違うものは、採らない
+    ([{"title": "t", "columns": "abc", "rows": [["1"]]}], 0), ([{"title": "t", "columns": ["a"], "rows": "xyz"}], 0),
+])
+def test_repair_tables_only_returns_well_shaped_candidates_within_the_cap(conn, tables, kept):
+    """AI の作り直しの答え（未信頼）を、数と形の両方で抑える。"""
+    from app import llm
+    f = client_dynamic(lambda k, i: [("repair_tables", {"tables": tables})], echo_model=True)
+    out, cost = fusion._repair_tables(conn, "org_1", "理解した内容: 資材が不足している", f, llm.load_config())
+    assert len(out) == kept
+    assert all(set(t) == {"title", "columns", "rows"} and t["columns"] and t["rows"] for t in out)
+
+
+def test_repair_tables_clips_a_huge_table_and_survives_a_failed_call(conn):
+    from app import llm
+    big = [{"title": "t", "columns": ["c"] * 40, "rows": [["v"] * 40] * 90}]
+    f = client_dynamic(lambda k, i: [("repair_tables", {"tables": big})], echo_model=True)
+    out, _ = fusion._repair_tables(conn, "org_1", "理解した内容: x", f, llm.load_config())
+    assert len(out[0]["columns"]) == fusion.MAX_TABLE_COLS and len(out[0]["rows"]) == fusion.MAX_TABLE_ROWS
+
+    def boom(k, i):
+        raise RuntimeError("down")
+    assert fusion._repair_tables(conn, "org_1", "理解した内容: x", client_dynamic(boom, echo_model=True), llm.load_config()) == ([], 0.0)
+    assert fusion._repair_tables(conn, "org_1", "", f, llm.load_config()) == ([], 0.0)   # 文章がなければ、呼ばない
+
+
+def test_repaired_candidates_are_capped_and_unnamed_ones_get_a_number(conn, alice, setup):
+    """AI が上限より多く返しても、作る候補は MAX_TABLE_CANDIDATES まで。題がない候補には、番号を付ける。"""
+    card, image = setup
+    broken = dict(GOOD, table={"title": "壊れた表", "columns": {}, "rows": []})
+    many = [{"title": None, "columns": ["品目"], "rows": [["ねじ"]]}] * 12
+    fid, f = run(conn, alice, card, image, factory_with_repair(broken, many))
+    st = finish(conn, alice, fid, f)
+    assert st["status"] == "done"
+    openpyxl = pytest.importorskip("openpyxl")
+    mime, data = fusion.download(conn, alice, fid, "table.xlsx")
+    names = openpyxl.load_workbook(io.BytesIO(data)).sheetnames
+    assert len(names) == fusion.MAX_TABLE_CANDIDATES and names[0] == "候補1" and "None" not in "".join(names)
 
 
 def test_repaired_candidates_with_personal_info_are_all_discarded(conn, alice, setup):
