@@ -229,7 +229,11 @@ def confirm_and_analyze(conn, actor, fusion_id: str, edited: list[str] | None, *
     from . import cards
     card = cards._get(conn, actor, row["card_id"])
     img = db.get_image(conn, actor.org_id, row["image_id"])
+    if img is None:                      # 音声を文字にしている間に、画像が消えることがある（整理・削除）
+        raise NotFound(row["image_id"])
     path = cards.locate_image(img["path"])
+    if not path.is_file():               # ファイルだけ消えた場合も、同じ扱い（内部のパスは画面に出さない）
+        raise NotFound(row["image_id"])
     jpeg = path.read_bytes()
     vision.check(conn, actor.org_id, card, img, jpeg)          # 実行の直前にも、もう一度（設定・面積・機微語は、途中で変わり得る）
     if not enabled(conn, actor.org_id):
@@ -281,7 +285,8 @@ def validate(inp: dict, tnorm: str, names: set[str]) -> tuple[dict | None, list[
     tb, rp, em = inp.get("table"), inp.get("report"), inp.get("email")
     if not und or not isinstance(tb, dict) or not isinstance(rp, dict) or not isinstance(em, dict):
         return None, ["理解・表・文書・メールのどれかがない"]
-    cols = [str(c)[:60] for c in tb.get("columns", []) if isinstance(tb.get("columns"), list)][:MAX_TABLE_COLS]
+    raw_cols = tb.get("columns") if isinstance(tb.get("columns"), list) else []   # 数値・文字列など、リストでない形も来る
+    cols = [str(c)[:60] for c in raw_cols][:MAX_TABLE_COLS]
     rows = [[str(c)[:200] for c in r][:len(cols)] for r in (tb.get("rows") if isinstance(tb.get("rows"), list) else []) if isinstance(r, list)][:MAX_TABLE_ROWS]
     if not cols or not rows:
         return None, ["表が空"]
@@ -420,7 +425,10 @@ def share(conn, actor, fusion_id: str, name: str) -> str:
         raise FusionRefused("共有先の外へは書けません")
     if dest.exists() or dest.is_symlink():
         raise FusionRefused("同じ名前のファイルが、すでにあります")
-    dest.write_bytes(data)
+    try:
+        dest.write_bytes(data)
+    except OSError:   # 書き込みを許されていない・容量がない等。内部のパスは画面に出さない
+        raise FusionRefused("共有先のフォルダに書き込めませんでした。オーナーに、書き込めるフォルダを設定してもらってください") from None
     db.audit(conn, actor.org_id, "fusion.share", actor.member_id, fusion_id, f"{name}を共有先へコピー")
     conn.commit()
     return dest.name
@@ -431,9 +439,11 @@ MAX_URL = 1900             # 作成画面の URL の長さの上限（長すぎ�
 
 
 def gmail_url(email: dict, folder_hint: str = "", to: str | None = None) -> str:
-    """Gmail の作成画面を開く URL（宛先なし）。開くだけで、送信はしない。表は添付できないので、本文に要点と共有先の場所を書く。
+    """Gmail の作成画面を開く URL。開くだけで、送信はしない。宛先は、本人が設定した自分の Gmail アドレスだけ（未設定なら宛先なし）。
+    表は添付できないので、本文に要点と共有先の場所を書く。
     日本語は 1 文字が 9 文字ほどに増えるので、URL の長さが上限に収まるまで、本文を短くする（下書きの全文は、文書に残っている）。"""
-    tail = (f"\n\n（表と文書は、共有フォルダ「{folder_hint}」に置きました）" if folder_hint
+    hint = folder_hint[:40]            # フォルダ名が長くても、URL の上限を超えないようにする
+    tail = (f"\n\n（表と文書は、共有フォルダ「{hint}」に置きました）" if hint
             else "\n\n（表と文書は、別途ファイルを添付してください）")
     subject, body = email["subject"][:120], email["body"][:MAX_BODY]
 
@@ -442,13 +452,16 @@ def gmail_url(email: dict, folder_hint: str = "", to: str | None = None) -> str:
         q["to"] = to
         q["authuser"] = to
 
-    def build(b: str) -> str:
-        return "https://mail.google.com/mail/?" + urllib.parse.urlencode({**q, "su": subject, "body": b}, quote_via=urllib.parse.quote)
+    def build(s: str, b: str) -> str:
+        return "https://mail.google.com/mail/?" + urllib.parse.urlencode({**q, "su": s, "body": b}, quote_via=urllib.parse.quote)
 
-    url = build(body + tail)
-    while len(url) > MAX_URL and body:
+    url = build(subject, body + tail)
+    while len(url) > MAX_URL and body:         # まず本文を短くする（全文は、文書に残っている）
         body = body[:max(0, int(len(body) * 0.8) - 1)]
-        url = build(body + ("…" if body else "") + tail)
+        url = build(subject, body + ("…" if body else "") + tail)
+    while len(url) > MAX_URL and subject:      # それでも長ければ、件名を短くする
+        subject = subject[:max(0, int(len(subject) * 0.8) - 1)]
+        url = build(subject + ("…" if subject else ""), tail)
     return url
 
 

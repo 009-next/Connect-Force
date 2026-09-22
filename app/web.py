@@ -855,6 +855,11 @@ def image_member(req: Req, image_id: str) -> Response:
     return _serve_file(str(cards.locate_image(img["path"])))
 
 
+def favicon(req: Req) -> Response:
+    """ブラウザが必ず取りに来る。返すものがないので 204（毎回 404 をログに残さない）。"""
+    return Response(204, b"", content_type="image/x-icon")
+
+
 def static_file(req: Req, name: str) -> Response:
     if name not in ("mask.js", "mask-edit.js", "talk.js"):  # 配るファイルは固定。任意のパスは読ませない
         return not_found()
@@ -1341,6 +1346,7 @@ ROUTES = [
     ("GET", r"/n", notifications_page), ("POST", r"/n/([\w\-]+)/approve", notification_approve),
     ("POST", r"/n/([\w\-]+)/reject", notification_reject),
     ("GET", r"/static/([\w.\-]+)", static_file),
+    ("GET", r"/favicon\.ico", favicon),
     ("GET", r"/c/([\w\-]+)/mask/([\w\-]+)", mask_edit_page), ("POST", r"/c/([\w\-]+)/mask/([\w\-]+)", mask_edit_save),
     ("GET", r"/", home), ("GET", r"/login", login_form), ("POST", r"/login", login_post),
     ("POST", r"/login/verify", login_verify), ("POST", r"/logout", logout),

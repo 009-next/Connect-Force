@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import pathlib
 import re
 import urllib.parse
 import zipfile
@@ -595,3 +596,64 @@ def test_the_setting_form_shows_only_when_enabled_and_the_link_uses_the_members_
     assert "to=me.demo%40gmail.com" in page and "authuser=me.demo%40gmail.com" in page
     post(conn, "/settings/gmail", {"address": ""}, ck)
     assert "to=me.demo" not in get(conn, f"/c/{card['card_id']}", ck).body.decode()
+
+
+# ---- 途中で画像が消えた・AI の形が壊れていた（実行時の堅牢さ）------------------------------------------
+
+def test_an_image_removed_while_transcribing_is_refused_cleanly(conn, alice, setup):
+    """音声を文字にしている間に画像（行・ファイル）が消えても、500 にせず、内部のパスも出さない。"""
+    from app import cards
+    from app.objects import NotFound
+    card, image = setup
+    for kill in ("file", "row"):
+        f = factory()
+        fid = fusion.start(conn, alice, card["card_id"], image["image_id"], WAV, "wav", consent=True, jobs=web.JOBS, client_factory=f)
+        img = db.get_image(conn, "org_1", image["image_id"])
+        path = cards.locate_image(img["path"])
+        backup = path.read_bytes() if path.is_file() else b""
+        if kill == "file":
+            path.unlink()
+        else:
+            db.run(conn, "DELETE FROM image WHERE image_id=?", (image["image_id"],))
+            conn.commit()
+        with pytest.raises(NotFound):
+            fusion.confirm_and_analyze(conn, alice, fid, None, jobs=web.JOBS, client_factory=f)
+        if kill == "file":
+            path.write_bytes(backup)
+        else:
+            db.run(conn, "INSERT INTO image SELECT * FROM image WHERE 0")   # 行は戻さない（この回で終わり）
+            break
+
+
+@pytest.mark.parametrize("table", [{"title": "t", "columns": 5, "rows": [["a"]]}, {"title": "t", "columns": "abc", "rows": [["a"]]},
+                                   {"title": "t", "columns": {"a": 1}, "rows": [["a"]]}, {"title": "t", "columns": ["a"], "rows": 7}])
+def test_a_broken_table_shape_is_rejected_not_raised(table):
+    res, why = val(table=table)
+    assert res is None and why
+
+
+@pytest.mark.parametrize("subject,hint", [
+    ("現場資材の不足について数量の確認のお願い" * 6, "とても長い共有フォルダの名前" * 4),
+    ("🚧" * 200, "📁" * 60),   # 1 文字 4 バイト（URL では 1 文字が 12 文字に増える）
+])
+def test_the_gmail_url_stays_within_the_limit_even_with_a_long_subject_and_folder(subject, hint):
+    u = fusion.gmail_url({"subject": subject, "body": "本文" * 500}, hint, "someone.long.address@gmail.com")
+    assert len(u) <= fusion.MAX_URL
+    assert u.startswith("https://mail.google.com/mail/?")
+
+
+def test_a_share_folder_that_cannot_be_written_is_refused_without_leaking_the_path(conn, alice, owner, setup, tmp_path, monkeypatch):
+    """オーナーが、書けないフォルダを選んでいた場合。500 にせず、内部のパスも画面に出さない。"""
+    fid = done_run(conn, alice, setup)
+    fusion.set_share_dir(conn, owner, str(tmp_path))
+    def deny(self, data):
+        raise PermissionError(13, "Permission denied", str(tmp_path / "secret_internal_path"))
+    monkeypatch.setattr(pathlib.Path, "write_bytes", deny)
+    with pytest.raises(fusion.FusionRefused) as e:
+        fusion.share(conn, alice, fid, "table.xlsx")
+    assert "書き込めません" in str(e.value) and "secret_internal_path" not in str(e.value)
+
+
+def test_the_browsers_favicon_request_is_answered_without_a_404(conn):
+    r = get(conn, "/favicon.ico")
+    assert r.status == 204 and r.body == b""
