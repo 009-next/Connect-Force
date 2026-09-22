@@ -28,19 +28,29 @@ img.s{width:100%;border-radius:3mm;border:1px solid #d5e4ff;display:block}
 .pill{display:inline-block;background:#2f80ff;color:#fff;border-radius:99px;padding:.6mm 3mm;font-size:8.5pt;margin:0 1mm 1mm 0}
 .band{background:#0f2447;color:#fff;border-radius:4mm;padding:3mm 5mm;margin-top:3mm}
 .band p{color:#fff}
+.steps4{display:grid;grid-template-columns:1fr 1fr;gap:3mm;margin-top:2mm}
+.steps4 .step{border-radius:4mm;padding:2.5mm 3mm;background:#f5f9ff;border:1px solid #d5e4ff}
+.steps4 .step.acc{background:#eaf5fc;border-color:#36a9e1}
+.steps4 .step i{font-style:normal;display:inline-block;width:6mm;height:6mm;line-height:6mm;text-align:center;border-radius:50%;background:linear-gradient(135deg,#2f80ff,#3ec5ff);color:#fff;font-weight:700;font-size:9pt;margin-right:2mm}
+.steps4 .step span{font-size:9.6pt}
 </style></head><body>
 <section class="page">
  <div class="hero"><small>HACKATHON 2026 / 見るconnect</small><h1>Connect-Force</h1><p>会話と画面から、次の業務を組み立てる「物エージェント」</p></div>
- <h2>ひとことで</h2>
- <p>物や場所に貼ったQR・NFCにかざすと、その物の<b>担当・記録・これまでの経緯</b>が開きます。作業の成果は、写真と声から「動くカード」にして、リンクで渡せます。その裏で、状況を見て動くのが物エージェントです。</p>
- <div class="band"><p><b>AIが選び、コードが守り、人が確定する。</b> 送信・共有範囲の拡大・削除は、AIにはできません。</p></div>
+ <h2>こんな場面、ありませんか？</h2>
+ <div class="steps4">
+  <div class="step"><i>1</i><span><b>遠隔連絡</b>：現場から「緊急トラブル発生」の連絡が入る</span></div>
+  <div class="step"><i>2</i><span><b>対応依頼</b>：即時の対応が要請される</span></div>
+  <div class="step"><i>3</i><span><b>対応困難</b>：受けた側も手が離せず、「誰か代わりに対応してほしい」</span></div>
+  <div class="step acc"><i>4</i><span><b>必要なアクション</b>：状況を伝える資料づくり・共有、急ぎの発注メールに追われる</span></div>
+ </div>
+ <div class="band"><p><b>この 4 番目を、Connect-Force が引き受けます。</b> 現場からの電話の声と、共有された画面から、Excel の表・Word の説明・メールの下書きまで。送信・共有は、人が押したときだけです。</p></div>
  <h2>3つのポイント</h2>
  <div class="grid">
   <div class="card"><b>① 見える</b><p>タグを読むと、その物のページが開く。経緯と今の状態を、根拠のカードつきで要約。</p></div>
   <div class="card"><b>② 守る</b><p>顔・ナンバー・書類は、端末で隠してから送る。通話画面は「開けた所だけ」をAIが見る。</p></div>
   <div class="card"><b>③ 動く</b><p>会話を確認して同意すれば、資料・メールの下書きまで。送るのは、人。</p></div>
  </div>
- <h2>デモの流れ</h2>
+ <h2>連絡が来てからの流れ</h2>
  <div class="steps">
   <div class="step"><i>1</i><span>現場の画像を共有し、全面を隠す</span></div>
   <div class="step"><i>2</i><span>対象の物だけ、なぞって囲んで開ける</span></div>
@@ -49,13 +59,11 @@ img.s{width:100%;border-radius:3mm;border:1px solid #d5e4ff;display:block}
   <div class="step"><i>5</i><span>Excel・Word・メールの下書きを作成</span></div>
   <div class="step"><i>6</i><span>共有／送信の準備（人が押す）</span></div>
  </div>
-  <h2>守りの層</h2>
- <img class="s" src="safety.png" style="height:68mm;object-fit:cover;object-position:top">
 </section>
 <section class="page">
  <h2 style="margin-top:0">自動で作られるもの</h2>
  <div class="two"><div><img class="s" src="shot3.png"></div>
- <div><ul><li><b>表（Excel）</b>：会話で出た数量を、出所つきで整理</li><li><b>説明（Word）</b>：経緯・見えているもの・次の作業</li><li><b>メール（Gmail）</b>：自分のGmailアドレスを設定すると宛先に入る。開いて直して、送るのは人</li><li><b>共有</b>：オーナーが決めたフォルダへコピー</li><li><b>作り直し</b>：表の形が壊れたら、AIが2〜3通りの候補を作り、Excelの複数シートに分ける</li></ul></div></div>
+ <div><ul><li><b>表（Excel）</b>：会話で出た数量を、出所つきで整理</li><li><b>説明（Word）</b>：経緯・見えているもの・次の作業</li><li><b>メール（Gmail）</b>：自分のGmailアドレスを設定すると宛先に入る。開いて直して、送るのは人</li><li><b>共有</b>：オーナーが決めたフォルダへコピー</li><li><b>候補</b>：表の形が決まらないときは、AIが2〜3通りの候補を作り、Excelの複数シートに分ける</li></ul></div></div>
  <h2>安心のしくみ</h2>
  <ul>
   <li>写真・画面は、<b>端末で隠してから</b>送ります。元の画像は、サーバーにもAIにも届きません。</li>
@@ -64,11 +72,11 @@ img.s{width:100%;border-radius:3mm;border:1px solid #d5e4ff;display:block}
   <li>会話や画面をAIに渡す機能は<b>既定オフ</b>。組織のオーナーの設定と、そのつどの確認が揃ったときだけ動きます。</li>
   <li>共有・送信は、<b>人が押したときだけ</b>。AIは実行しません。</li>
  </ul>
- <h2>測ってから決めました</h2>
+ <h2>費用と速さ</h2>
  <div class="grid">
-  <div class="card"><b>6 / 6</b><p>統合分析の完了（デモ音声と現場画像）</p></div>
-  <div class="card"><b>約 $0.055</b><p>統合分析 1 回の費用（Claude の最上位を 1 回）</p></div>
-  <div class="card"><b>885 件</b><p>自動テスト。門を外すと失敗する変異 49 か所</p></div>
+  <div class="card"><b>約 $0.055</b><p>資料とメールの下書き 1 回（Claude の最上位を 1 回・30〜45 秒）</p></div>
+  <div class="card"><b>$0.0007</b><p>電話の声を文字にする 1 回（約 7 秒）</p></div>
+  <div class="card"><b>885 件</b><p>自動テスト。守りの門を外すと失敗する変異 49 か所</p></div>
  </div>
  <h2>使っている技術</h2>
  <p><span class="pill">Claude</span><span class="pill">Orca Router</span><span class="pill">Gemini（音声）</span><span class="pill">Python</span><span class="pill">Webアプリ（スマホ・PC）</span></p>
