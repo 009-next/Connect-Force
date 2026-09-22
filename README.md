@@ -84,8 +84,8 @@ APIキーは環境変数で設定し、ソース、Git、チャット、画面�
 
 ## ハッカソン資料
 
-- [紹介動画リンク先](https://youtu.be/-M7Yo9JgqXE))
-- [紹介パンフレット](./hackathon-kit/Connect-Force_来場者パンフレット.pdf)
+- [紹介動画リンク先](https://youtu.be/-M7Yo9JgqXE)
+- [紹介パンフレット](file:///C:/Users/ryoh0/AI/%E6%A5%AD%E5%8B%99%E7%94%A8/202604/AGENTS/202608LLM/202609hackathon/%E7%99%BA%E8%A1%A8%E8%B3%87%E6%96%99/%E3%83%91%E3%83%B3%E3%83%95%E3%83%AC%E3%83%83%E3%83%88/pamphlet.html)
 
 ## ライセンス
 
