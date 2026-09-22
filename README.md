@@ -35,6 +35,23 @@ MIRUCON_ENV=dev PORT=8000 python -m app.web owner@example.test
 
 「共有」で表・文書をコピーする先のフォルダは、**アプリ（Python プロセス）の実行アカウントが書き込める場所**を指定してください。設定の時点で、実際に試し書きをして確認します（書けなければ、その場で断ります）。設定した後にフォルダの権限や空き容量が変わった場合に備え、「共有」を押した時点でも、書き込みに失敗すれば安全に断ります（内部のパスは画面に表示しません）。
 
+### 検証スクリプト（実 API を使う任意の検証。`app/tests` の自動テストとは別）
+
+`verification/` に、実 API（`ORCA_API_KEY` または `ANTHROPIC_API_KEY`）を使って本番の経路を通す検証スクリプトがあります。実行には課金が伴うため、`--yes` を付けない限り、費用の見込みだけを表示して終了します（すべて `--max-cost` で上限を持てます）。
+
+```bash
+pip install -r requirements-verification.txt
+```
+
+素材（画像・音声）は `verification/assets/README.md` の手順で用意してください。
+
+| スクリプト | 内容 |
+|---|---|
+| `run_fusion_probe.py` | 統合分析（音声を文字にする→確認→対象物の赤丸・表・文書・メール下書き）を、本番の経路で通す |
+| `run_repair_probe.py` | 表の形が壊れた場合に、AI が候補を作り直し、Excel の複数シートに分ける経路を、本番の経路で通す |
+| `extract_frame.py` | 画像を 1 コマにした動画から、コマを取り出せるかを確認する（画面共有が使えないときの代わりの入力） |
+| `record_demo.py` | ブラウザでの一連の操作を録画する |
+
 ### Node.js版 Mission Room
 
 Node.js 24以上とpnpmを用意します。
