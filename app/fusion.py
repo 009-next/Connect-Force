@@ -471,10 +471,8 @@ def _analyze(conn, org_id: str, member_id: str, fid: str, turns: list[dict], jpe
             if table_candidates:
                 patched = dict(tu["input"]); patched["table"] = table_candidates[0]
                 res, why2 = validate(patched, tnorm, names)   # 安全検査は、ここでもう一度・同じ場所だけで行う
-                if res:
-                    why = [f"表の形が壊れていたため、{len(table_candidates)}通りの候補を作り直した"]
-                else:
-                    why = why2
+                # 作り直した旨に加えて、2回目の検査で出た注意（赤丸を付けなかった等）も残す（画面の「検査で調整した点」に出す）
+                why = ([f"表の形が壊れていたため、{len(table_candidates)}通りの候補を作り直した"] + why2) if res else why2
         status = "done" if res else "rejected"
     except Exception as e:  # noqa: BLE001  失敗しても、カードには影響しない
         why = [f"{type(e).__name__}: {str(e)[:120]}"]
@@ -486,7 +484,9 @@ def _analyze(conn, org_id: str, member_id: str, fid: str, turns: list[dict], jpe
             res["date_candidates"] = [c["label"] if isinstance(c, dict) else str(c) for c in cand][:3]
         if len(table_candidates) > 1:
             files["table.xlsx"] = docgen.make_xlsx_multi([(t["title"], t["columns"], t["rows"]) for t in table_candidates])
-            res["table_note"] = f"表の形が読み取りにくかったため、{len(table_candidates)}通りの候補をシートに分けて作りました。"
+            # Excel のシート名は 31 文字までで切れるので、候補の題は画面にも並べて出す（2つ目以降の題が、どこにも残らないのを防ぐ）
+            res["table_note"] = (f"表の形が読み取りにくかったため、{len(table_candidates)}通りの候補をシートに分けて作りました: "
+                                 + "／".join(t["title"] for t in table_candidates))
         else:
             files["table.xlsx"] = docgen.make_xlsx(res["table"]["title"], res["table"]["columns"], res["table"]["rows"])
         files["report.docx"] = docgen.make_docx(res["report"]["title"], res["report"]["sections"])

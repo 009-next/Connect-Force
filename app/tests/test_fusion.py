@@ -423,9 +423,22 @@ def test_a_broken_table_with_several_candidates_becomes_a_multi_sheet_excel(conn
     fid, f = run(conn, alice, card, image, factory_with_repair(broken, repaired))
     st = finish(conn, alice, fid, f)
     assert st["status"] == "done" and "2通りの候補" in st["result"]["table_note"]
+    assert "候補1" in st["result"]["table_note"] and "候補2" in st["result"]["table_note"]   # 題は画面にも並べる（シート名は31字で切れる）
     openpyxl = pytest.importorskip("openpyxl")
     mime, data = fusion.download(conn, alice, fid, "table.xlsx")
     assert openpyxl.load_workbook(io.BytesIO(data)).sheetnames == ["候補1", "候補2"]
+
+
+def test_the_repair_keeps_the_warnings_from_the_second_check(conn, alice, setup):
+    """作り直したあとの検査で出た注意（赤丸を付けない等）も、作り直した旨と一緒に残す。"""
+    card, image = setup
+    broken = dict(GOOD, table={"title": "壊れた表", "columns": {}, "rows": []},
+                  targets=[dict(GOOD["targets"][0], box=[0, 0, 1, 1])])   # 広すぎる箱 → 注意が出るはず
+    repaired = [{"title": "候補1", "columns": ["品目"], "rows": [["ねじ"]]}]
+    fid, f = run(conn, alice, card, image, factory_with_repair(broken, repaired))
+    st = finish(conn, alice, fid, f)
+    assert st["status"] == "done"
+    assert "作り直した" in st["why"] and "赤丸を付けない" in st["why"]
 
 
 @pytest.mark.parametrize("tables,kept", [
