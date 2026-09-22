@@ -30,6 +30,12 @@ def _cell_text(v) -> str:
     return ("'" + t) if _FORMULA.match(t) and not re.fullmatch(r"-?\d+(\.\d+)?", t) else t
 
 
+def _sheet_name(title: str, fallback: str = "表") -> str:
+    """シート名として使える形にする（Excel が禁じる文字を全角に置き換え・31文字まで）。"""
+    return clean(title, 31).replace("/", "／").replace("\\", "＼").replace("?", "？").replace("*", "＊") \
+        .replace("[", "［").replace("]", "］").replace(":", "：") or fallback
+
+
 def _col(i: int) -> str:
     s = ""
     i += 1
@@ -77,7 +83,7 @@ def make_xlsx(title: str, columns: list[str], rows: list[list]) -> bytes:
               '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
               '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
               '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
-    name = escape(clean(title, 31).replace("/", "／").replace("\\", "＼").replace("?", "？").replace("*", "＊").replace("[", "［").replace("]", "］").replace(":", "：") or "表")
+    name = escape(_sheet_name(title))
     wb = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
           '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
           f'<sheets><sheet name="{name}" sheetId="1" r:id="rId1"/></sheets></workbook>')
@@ -103,6 +109,99 @@ def make_xlsx(title: str, columns: list[str], rows: list[list]) -> bytes:
         z.writestr("xl/workbook.xml", wb)
         z.writestr("xl/_rels/workbook.xml.rels", wbrels)
         z.writestr("xl/worksheets/sheet1.xml", sheet)
+        z.writestr("xl/sharedStrings.xml", sst_xml)
+        z.writestr("xl/styles.xml", styles)
+    return b.getvalue()
+
+
+MAX_SHEETS = 3
+
+
+def make_xlsx_multi(sheets: list[tuple[str, list[str], list[list]]]) -> bytes:
+    """複数の表を、1つのブックの複数シートに分けて書く（各シートの中身は make_xlsx と同じ書式。共有文字列・書式はブック共通）。
+    表の形が壊れていて、AI に候補を作り直させたとき（2〜3通り）に使う。"""
+    sheets = sheets[:MAX_SHEETS]
+    sst: list[str] = []
+    idx: dict[str, int] = {}
+
+    def s(t: str) -> int:
+        if t not in idx:
+            idx[t] = len(sst)
+            sst.append(t)
+        return idx[t]
+
+    def cell(ci: int, ri: int, t: str, style: int = 0) -> str:
+        ref = f"{_col(ci)}{ri}"
+        if re.fullmatch(r"-?\d+(\.\d+)?", t) and len(t) < 15 and style == 0:
+            return f'<c r="{ref}"><v>{t}</v></c>'
+        return f'<c r="{ref}" t="s"' + (f' s="{style}"' if style else "") + f"><v>{s(t)}</v></c>"
+
+    sheet_xmls: list[str] = []
+    names: list[str] = []
+    for i, (title, raw_columns, raw_rows) in enumerate(sheets):
+        columns = [clean(c, 60) for c in raw_columns[:MAX_COLS]]
+        data = [[_cell_text(v) for v in r[:len(columns)]] for r in raw_rows[:MAX_ROWS]]
+        xml_rows = ['<row r="1">' + "".join(cell(i2, 1, c, 1) for i2, c in enumerate(columns)) + "</row>"]
+        for n, r in enumerate(data, start=2):
+            xml_rows.append(f'<row r="{n}">' + "".join(cell(i2, n, v) for i2, v in enumerate(r)) + "</row>")
+        widths = [max([len(columns[i2])] + [len(r[i2]) for r in data if i2 < len(r)]) for i2 in range(len(columns))]
+        cols_xml = "".join(f'<col min="{i2 + 1}" max="{i2 + 1}" width="{min(max(w * 1.8 + 2, 10), 60):.0f}" customWidth="1"/>' for i2, w in enumerate(widths))
+        sheet_xmls.append('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                          '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                          f"<cols>{cols_xml}</cols><sheetData>{''.join(xml_rows)}</sheetData></worksheet>")
+        names.append(_sheet_name(title, f"表{i + 1}"))
+
+    seen: dict[str, int] = {}   # 同じ名前のシートは、Excel が受け付けないので、番号を付けて分ける
+    for i, n in enumerate(names):
+        if n in seen:
+            seen[n] += 1
+            names[i] = f"{n[:28]}({seen[n]})"
+        else:
+            seen[n] = 0
+
+    sst_xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+               f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{len(sst)}" uniqueCount="{len(sst)}">'
+               + "".join(f'<si><t xml:space="preserve">{escape(t)}</t></si>' for t in sst) + "</sst>")
+    styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+              '<fonts count="2"><font><sz val="11"/><name val="Meiryo UI"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Meiryo UI"/></font></fonts>'
+              '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+              '<fill><patternFill patternType="solid"><fgColor rgb="FF2F80FF"/></patternFill></fill></fills>'
+              '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+              '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+              '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+              '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
+
+    n_sheets = len(names)
+    sheets_xml = "".join(f'<sheet name="{escape(n)}" sheetId="{i + 1}" r:id="rId{i + 1}"/>' for i, n in enumerate(names))
+    wb = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+          f'<sheets>{sheets_xml}</sheets></workbook>')
+    ct = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+          + "".join(f'<Override PartName="/xl/worksheets/sheet{i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(n_sheets))
+          + '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>')
+    rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+    wbrels_parts = [f'<Relationship Id="rId{i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i + 1}.xml"/>'
+                    for i in range(n_sheets)]
+    wbrels_parts.append(f'<Relationship Id="rId{n_sheets + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>')
+    wbrels_parts.append(f'<Relationship Id="rId{n_sheets + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>')
+    wbrels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + "".join(wbrels_parts) + "</Relationships>")
+
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", ct)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("xl/workbook.xml", wb)
+        z.writestr("xl/_rels/workbook.xml.rels", wbrels)
+        for i, sx in enumerate(sheet_xmls):
+            z.writestr(f"xl/worksheets/sheet{i + 1}.xml", sx)
         z.writestr("xl/sharedStrings.xml", sst_xml)
         z.writestr("xl/styles.xml", styles)
     return b.getvalue()

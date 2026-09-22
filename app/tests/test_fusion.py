@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import re
+import tempfile
 import urllib.parse
 import zipfile
 from xml.dom import minidom
@@ -124,6 +125,23 @@ def test_generated_files_open_with_real_office_libraries_when_available():
     assert "経緯" in [p.text for p in docx.Document(io.BytesIO(docgen.make_docx("t", [{"heading": "経緯", "paragraphs": ["x"]}]))).paragraphs]
 
 
+def test_make_xlsx_multi_writes_one_sheet_per_table_and_dedupes_names():
+    openpyxl = pytest.importorskip("openpyxl")
+    b = docgen.make_xlsx_multi([("候補", ["a"], [["1"]]), ("候補", ["b"], [["2"]]), ("候補/C", ["c"], [["x", "y"]])])
+    assert zipfile.ZipFile(io.BytesIO(b)).testzip() is None
+    wb = openpyxl.load_workbook(io.BytesIO(b))
+    assert wb.sheetnames == ["候補", "候補(1)", "候補／C"]
+    assert [[c.value for c in r] for r in wb["候補"].iter_rows()] == [["a"], [1]]
+    assert [[c.value for c in r] for r in wb["候補(1)"].iter_rows()] == [["b"], [2]]
+
+
+def test_make_xlsx_multi_caps_the_number_of_sheets():
+    openpyxl = pytest.importorskip("openpyxl")
+    b = docgen.make_xlsx_multi([(f"表{i}", ["a"], [["1"]]) for i in range(6)])
+    wb = openpyxl.load_workbook(io.BytesIO(b))
+    assert len(wb.sheetnames) == docgen.MAX_SHEETS
+
+
 # ---- AI の答えの検査 --------------------------------------------------------------------------------
 
 TN = talk.transcript_norm(TURNS)
@@ -178,6 +196,13 @@ def test_missing_parts_are_rejected():
     assert val(email={"subject": "", "body": ""})[0] is None
     assert val(report={"title": "t", "sections": []})[0] is None
     assert fusion.validate("x", TN, set())[0] is None
+
+
+def test_the_email_body_is_not_aggressively_shortened():
+    """下書きは、できるだけ削らない（Gmail の URL は自前の短いリンクを経由するので、長い本文をそのまま持てる）。"""
+    long_body = "検討事項。" * 500   # 2500 文字。旧・上限（1200）なら切り詰められていた
+    res, _ = val(email={"subject": "件名", "body": long_body})
+    assert res and res["email"]["body"] == long_body
 
 
 def test_next_work_is_capped_and_only_text():
@@ -338,6 +363,75 @@ def test_a_rejected_answer_leaves_no_files_and_a_reason(conn, alice, setup):
     assert st["status"] == "rejected" and st["result"] is None and st["files"] == [] and st["why"]
 
 
+# ---- 表の形が壊れたとき: 作り直し（画像は再送しない・軽い呼び出し） --------------------------------------------
+
+def factory_with_repair(fuse_broken, repair_tables, turns=TURNS):
+    def fn(k, i):
+        names = {t["name"] for t in k["tools"]}
+        if "extract_talk" in names:
+            return [("extract_talk", {"turns": turns})]
+        if "repair_tables" in names:
+            return [("repair_tables", {"tables": repair_tables})]
+        return [("fuse_and_draft", fuse_broken)]
+    return client_dynamic(fn, echo_model=True)
+
+
+def test_a_broken_table_is_repaired_with_a_single_clean_candidate(conn, alice, setup):
+    card, image = setup
+    broken = dict(GOOD, table={"title": "壊れた表", "columns": "abc", "rows": [["x"]]})   # columns がリストでない
+    repaired = [{"title": "点検項目（作り直し）", "columns": ["項目", "状態"], "rows": [["バケット", "要確認"]]}]
+    fid, f = run(conn, alice, card, image, factory_with_repair(broken, repaired))
+    st = finish(conn, alice, fid, f)
+    assert st["status"] == "done" and st["result"]["table"]["title"] == "点検項目（作り直し）"
+    assert "作り直した" in st["why"] and "table_note" not in st["result"]
+    assert set(st["files"]) == {"table.xlsx", "report.docx", "circled.jpg"}   # 対象物（targets）は壊れていないので、赤丸もつく
+    repair_calls = [c for c in f.state["calls"] if "repair_tables" in {t["name"] for t in c["tools"]}]
+    assert len(repair_calls) == 1   # やり直しは1回だけ
+    assert not any(b.get("type") == "image" for m in repair_calls[0]["messages"] for b in m["content"])   # 画像は再送しない
+    openpyxl = pytest.importorskip("openpyxl")
+    mime, data = fusion.download(conn, alice, fid, "table.xlsx")
+    assert openpyxl.load_workbook(io.BytesIO(data)).sheetnames == ["点検項目（作り直し）"]
+
+
+def test_a_broken_table_with_several_candidates_becomes_a_multi_sheet_excel(conn, alice, setup):
+    card, image = setup
+    broken = dict(GOOD, table={"title": "壊れた表", "columns": {}, "rows": []})
+    repaired = [{"title": "候補1", "columns": ["項目"], "rows": [["a"]]}, {"title": "候補2", "columns": ["項目", "数"], "rows": [["b", "2"]]}]
+    fid, f = run(conn, alice, card, image, factory_with_repair(broken, repaired))
+    st = finish(conn, alice, fid, f)
+    assert st["status"] == "done" and "2通りの候補" in st["result"]["table_note"]
+    openpyxl = pytest.importorskip("openpyxl")
+    mime, data = fusion.download(conn, alice, fid, "table.xlsx")
+    assert openpyxl.load_workbook(io.BytesIO(data)).sheetnames == ["候補1", "候補2"]
+
+
+def test_repaired_candidates_with_personal_info_are_all_discarded(conn, alice, setup):
+    card, image = setup
+    broken = dict(GOOD, table={"title": "t", "columns": [], "rows": []})
+    repaired = [{"title": "t", "columns": ["連絡先"], "rows": [["090-1234-5678"]]}]
+    fid, f = run(conn, alice, card, image, factory_with_repair(broken, repaired))
+    st = finish(conn, alice, fid, f)
+    assert st["status"] == "rejected" and st["files"] == []
+
+
+def test_repair_is_not_attempted_when_more_than_the_table_is_broken(conn, alice, setup):
+    """理解の文まで空など、表以外も壊れているときは、やり直しをしない（「表が空」のときだけの対応）。"""
+    card, image = setup
+    broken = {"understanding": "", "table": GOOD["table"], "report": GOOD["report"], "email": GOOD["email"]}
+    calls_tools: list[set] = []
+
+    def fn(k, i):
+        calls_tools.append({t["name"] for t in k["tools"]})
+        if "extract_talk" in calls_tools[-1]:
+            return [("extract_talk", {"turns": TURNS})]
+        return [("fuse_and_draft", broken)]
+
+    fid, f = run(conn, alice, card, image, client_dynamic(fn, echo_model=True))
+    st = finish(conn, alice, fid, f)
+    assert st["status"] == "rejected"
+    assert not any("repair_tables" in names for names in calls_tools)
+
+
 def test_an_api_failure_is_a_failed_run_not_an_exception(conn, alice, setup):
     card, image = setup
     def boom(k, i):
@@ -410,6 +504,16 @@ def test_the_share_dir_must_exist_and_be_absolute(conn, owner, tmp_path):
     assert fusion.share_dir(conn, "org_1") is None
 
 
+def test_the_share_dir_must_actually_be_writable(conn, owner, tmp_path, monkeypatch):
+    """設定の時点で試し書きをする。書けなければ、その場で断る（作り手が後で失敗を引き当てないため）。"""
+    def deny(*a, **kw):
+        raise OSError(13, "Permission denied")
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", deny)
+    with pytest.raises(fusion.FusionRefused, match="書き込めません"):
+        fusion.set_share_dir(conn, owner, str(tmp_path))
+    assert fusion.share_dir(conn, "org_1") is None   # 設定は反映されていない
+
+
 def test_share_does_not_follow_a_symlink_at_the_destination(conn, alice, owner, setup, tmp_path):
     fid = done_run(conn, alice, setup)
     fusion.set_share_dir(conn, owner, str(tmp_path))
@@ -435,6 +539,16 @@ def test_the_gmail_link_only_opens_a_compose_window_without_a_recipient():
 
 
 # ---- 画面・ルート ---------------------------------------------------------------------------------------
+
+def test_the_gmail_route_404s_before_the_analysis_has_a_result(conn, alice, setup):
+    card, image = setup
+    fid, f = run(conn, alice, card, image)   # まだ transcribed のまま（confirm していない）
+    ck = login(conn, alice)
+    assert get(conn, f"/f/{fid}/gmail", ck).status == 404
+    finish(conn, alice, fid, factory(fuse=dict(GOOD, email={"subject": "s", "body": "電話は 03-1234-5678"})))
+    assert fusion.get(conn, alice, fid)["status"] == "rejected"
+    assert get(conn, f"/f/{fid}/gmail", ck).status == 404   # 不採用（結果なし）でも同じ
+
 
 def test_settings_are_owner_only_and_audited(conn, owner, alice):
     assert post(conn, "/settings/fusion", {"enabled": "1"}, login(conn, alice)).status in (403, 404)
@@ -468,8 +582,12 @@ def test_full_flow_through_the_web_pages(conn, alice, setup, monkeypatch, tmp_pa
     assert post(conn, f"/f/{fid}/confirm", {"t0": TURNS[0]["text"], "t1": TURNS[1]["text"]}, ck).status == 303
     fusion.set_share_dir(conn, owner, str(tmp_path))
     page = get(conn, f"/c/{card['card_id']}", ck).body.decode()
-    for s in ("聞いたこと", "私はこう理解しました", "作ったもの", "次の選択肢", "油圧ショベルのバケット", "circled.jpg", "https://mail.google.com/mail/?", "共有フォルダへコピー"):
+    for s in ("聞いたこと", "私はこう理解しました", "作ったもの", "次の選択肢", "油圧ショベルのバケット", "circled.jpg", f"/f/{fid}/gmail", "共有フォルダへコピー"):
         assert s in page
+    assert "https://mail.google.com" not in page   # 長い URL は、画面には直接埋め込まない
+    gr = get(conn, f"/f/{fid}/gmail", ck)
+    assert gr.status == 303 and dict(gr.headers)["Location"].startswith("https://mail.google.com/mail/?")
+    assert get(conn, f"/f/{fid}/gmail").status == 303 and dict(get(conn, f"/f/{fid}/gmail").headers)["Location"] == "/login"  # ログインなしでは開けない
     r = get(conn, f"/f/{fid}/file/table.xlsx", ck)
     assert r.status == 200 and r.content_type == docgen.XLSX_MIME and any("attachment" in v for k, v in r.headers)
     assert get(conn, f"/f/{fid}/file/circled.jpg", ck).content_type == "image/jpeg"
@@ -592,37 +710,43 @@ def test_the_setting_form_shows_only_when_enabled_and_the_link_uses_the_members_
     f = factory()
     fid = fusion.start(conn, alice, card["card_id"], image["image_id"], WAV, "wav", consent=True, jobs=web.JOBS, client_factory=f)
     fusion.confirm_and_analyze(conn, alice, fid, None, jobs=web.JOBS, client_factory=f)
-    page = get(conn, f"/c/{card['card_id']}", ck).body.decode()
-    assert "to=me.demo%40gmail.com" in page and "authuser=me.demo%40gmail.com" in page
+    loc = dict(get(conn, f"/f/{fid}/gmail", ck).headers)["Location"]
+    assert "to=me.demo%40gmail.com" in loc and "authuser=me.demo%40gmail.com" in loc
     post(conn, "/settings/gmail", {"address": ""}, ck)
-    assert "to=me.demo" not in get(conn, f"/c/{card['card_id']}", ck).body.decode()
+    assert "to=me.demo" not in dict(get(conn, f"/f/{fid}/gmail", ck).headers)["Location"]
 
 
-# ---- 途中で画像が消えた・AI の形が壊れていた（実行時の堅牢さ）------------------------------------------
+# ---- 画像の固定・共有先の書き込み確認・表の作り直し（実行時の堅牢さ）------------------------------------------
 
-def test_an_image_removed_while_transcribing_is_refused_cleanly(conn, alice, setup):
-    """音声を文字にしている間に画像（行・ファイル）が消えても、500 にせず、内部のパスも出さない。"""
+@pytest.mark.parametrize("kill", ["file", "row"])
+def test_the_image_is_pinned_at_start_and_survives_the_row_or_file_disappearing(conn, alice, setup, kill):
+    """start() の時点で画像を固定するので、音声を文字にしている間に、画像の行やファイルが消えても、分析を続けられる。"""
     from app import cards
-    from app.objects import NotFound
     card, image = setup
-    for kill in ("file", "row"):
-        f = factory()
-        fid = fusion.start(conn, alice, card["card_id"], image["image_id"], WAV, "wav", consent=True, jobs=web.JOBS, client_factory=f)
-        img = db.get_image(conn, "org_1", image["image_id"])
-        path = cards.locate_image(img["path"])
-        backup = path.read_bytes() if path.is_file() else b""
-        if kill == "file":
-            path.unlink()
-        else:
-            db.run(conn, "DELETE FROM image WHERE image_id=?", (image["image_id"],))
-            conn.commit()
-        with pytest.raises(NotFound):
-            fusion.confirm_and_analyze(conn, alice, fid, None, jobs=web.JOBS, client_factory=f)
-        if kill == "file":
-            path.write_bytes(backup)
-        else:
-            db.run(conn, "INSERT INTO image SELECT * FROM image WHERE 0")   # 行は戻さない（この回で終わり）
-            break
+    f = factory()
+    fid = fusion.start(conn, alice, card["card_id"], image["image_id"], WAV, "wav", consent=True, jobs=web.JOBS, client_factory=f)
+    pinned = db.one(conn, "SELECT image_jpeg, image_source FROM fusion_run WHERE fusion_id=?", (fid,))
+    assert bytes(pinned["image_jpeg"]) and pinned["image_source"] == "call_screen"   # start() の時点で、すでに固定されている
+    img = db.get_image(conn, "org_1", image["image_id"])
+    path = cards.locate_image(img["path"])
+    if kill == "file":
+        path.unlink()
+    else:
+        db.run(conn, "DELETE FROM image WHERE image_id=?", (image["image_id"],))
+        conn.commit()
+    fusion.confirm_and_analyze(conn, alice, fid, None, jobs=web.JOBS, client_factory=f)   # 例外にならず、続けられる
+    st = fusion.get(conn, alice, fid)
+    assert st["status"] == "done" and "circled.jpg" in st["files"]
+
+
+def test_confirm_refuses_cleanly_if_the_pinned_image_is_somehow_missing(conn, alice, setup):
+    """想定外に image_jpeg が空の行（データの不整合）でも、500 にはならない。"""
+    card, image = setup
+    f = factory()
+    fid = fusion.start(conn, alice, card["card_id"], image["image_id"], WAV, "wav", consent=True, jobs=web.JOBS, client_factory=f)
+    db.run(conn, "UPDATE fusion_run SET image_jpeg=NULL WHERE fusion_id=?", (fid,)); conn.commit()
+    with pytest.raises(fusion.FusionRefused, match="固定された画像"):
+        fusion.confirm_and_analyze(conn, alice, fid, None, jobs=web.JOBS, client_factory=f)
 
 
 @pytest.mark.parametrize("table", [{"title": "t", "columns": 5, "rows": [["a"]]}, {"title": "t", "columns": "abc", "rows": [["a"]]},

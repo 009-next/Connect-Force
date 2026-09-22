@@ -7,7 +7,7 @@
 - 写真は、ブラウザ（static/mask.js）が Canvas で作り手の指定した範囲を潰してから送る。サーバーに届くのはマスキング後の JPEG だけで、
   元の写真の入力欄は名前を持たず、フォームにも入らない。作り手が「隠すべき箇所をすべて隠した」と確認しない限り、サーバーは写真を受け付けない。
   サーバーでは images.process が EXIF 除去と再エンコードを行う（二重チェック）。
-- 開発モード限定（MIRUCON_ENV=dev）。
+- 開発モード限定（MIRUCON_ENV=dev）。HTTPS・Secure Cookie・逆プロキシ越しの IP は未対応。
 """
 
 from __future__ import annotations
@@ -1221,19 +1221,21 @@ def _fusion_result_html(req: Req, card, f: dict) -> str:
         seen += f'<img src="/f/{esc(fid)}/file/circled.jpg" alt="対象物に赤丸をつけた、フィルター後の画像">'
     elif r.get("targets"):
         seen += '<p class="muted">対象物の位置は、確かでないため、赤丸をつけていません。</p>'
-    made = (f'<p><b>{esc(r["table"]["title"])}</b></p>{_fusion_table_html(r["table"])}'
+    made = ((f'<p class="muted">{esc(r["table_note"])}</p>' if r.get("table_note") else "")
+            + f'<p><b>{esc(r["table"]["title"])}</b></p>{_fusion_table_html(r["table"])}'
             f'<p><b>{esc(r["report"]["title"])}</b></p>'
             + "".join(f'<p><b>{esc(s["heading"])}</b><br>{"<br>".join(esc(x) for x in s["paragraphs"])}</p>' for s in r["report"]["sections"])
             + f'<p><b>メールの下書き</b>（宛先なし）<br>件名: {esc(r["email"]["subject"])}<br>{esc(r["email"]["body"]).replace(chr(10), "<br>")}</p>'
             f'<div class="choices"><a class="btn sub" href="/f/{esc(fid)}/file/table.xlsx">表（Excel）をダウンロード</a>'
             f'<a class="btn sub" href="/f/{esc(fid)}/file/report.docx">文書（Word）をダウンロード</a></div>')
     d = fusion.share_dir(req.conn, req.actor.org_id)
-    hint = d.name if d else ""
     choices = ""
     if d:
         choices += "".join(f'<form method="post" action="/f/{esc(fid)}/share/{n}"><button class="sub">{lab}を共有フォルダへコピー</button></form>'
                            for n, lab in (("table.xlsx", "表"), ("report.docx", "文書")))
-    choices += f'<a class="btn" href="{esc(fusion.gmail_url(r["email"], hint, fusion.get_gmail(req.conn, req.actor)))}" target="_blank" rel="noopener noreferrer">送信の準備（Gmailで編集して送る）</a>'
+    # 長い Gmail の URL を、画面に直接埋め込まない。自前の短いリンクを経由させ、実際の URL はリダイレクト時にサーバーが作る
+    # （下書きの本文を、URL の長さのために削る必要がなくなる）
+    choices += f'<a class="btn" href="/f/{esc(fid)}/gmail" target="_blank" rel="noopener noreferrer">送信の準備（Gmailで編集して送る）</a>'
     nxt = "".join(f'<li>{esc(n["label"])}<br><span class="muted">{esc(n["reason"])}</span></li>' for n in r.get("next_work", []))
     if r.get("date_candidates"):
         nxt += "".join(f'<li class="muted">日付の候補: {esc(c)}</li>' for c in r["date_candidates"])
@@ -1329,10 +1331,24 @@ def fusion_share(req: Req, fusion_id: str, name: str) -> Response:
     return page("共有しました", f"<p>共有フォルダへコピーしました: {esc(dest)}</p><p><a href=\"/c/{esc(f['card_id'])}\">カードへ戻る</a></p>")
 
 
+def fusion_gmail(req: Req, fusion_id: str) -> Response:
+    """「送信の準備」の実体。長い Gmail の URL は、画面には出さず、このリンクを踏んだときだけサーバーが作ってリダイレクトする。"""
+    if (r := _need_login(req)):
+        return r
+    f = fusion.get(req.conn, req.actor, fusion_id)  # 権限の確認（作り手かオーナーか）は、この呼び出しの中で行う
+    if not f["result"]:
+        return not_found()
+    d = fusion.share_dir(req.conn, req.actor.org_id)
+    hint = d.name if d else ""
+    url = fusion.gmail_url(f["result"]["email"], hint, fusion.get_gmail(req.conn, req.actor))
+    return Response(303, headers=[("Location", url)])
+
+
 ROUTES = [
     ("POST", r"/settings/gmail", settings_gmail), ("POST", r"/settings/fusion", settings_fusion), ("POST", r"/settings/fusion-dir", settings_fusion_dir),
     ("POST", r"/c/([\w\-]+)/fusion/([\w\-]+)", card_fusion_start), ("POST", r"/f/([\w\-]+)/confirm", fusion_confirm),
     ("GET", r"/f/([\w\-]+)/file/([\w.\-]+)", fusion_file), ("POST", r"/f/([\w\-]+)/share/([\w.\-]+)", fusion_share),
+    ("GET", r"/f/([\w\-]+)/gmail", fusion_gmail),
     ("GET", r"/o/([\w\-]+)/talk", talk_page), ("POST", r"/o/([\w\-]+)/talk/start", talk_start),
     ("POST", r"/talk/([\w\-]+)/add", talk_add), ("POST", r"/talk/([\w\-]+)/edit", talk_edit),
     ("POST", r"/talk/([\w\-]+)/confirm", talk_confirm), ("POST", r"/talk/([\w\-]+)/analyze", talk_analyze),
@@ -1470,7 +1486,7 @@ def make_handler(conn):
 
 def main() -> None:
     if os.environ.get("MIRUCON_ENV") != "dev":
-        sys.exit("開発モード専用です。MIRUCON_ENV=dev を設定してください。")
+        sys.exit("開発モード専用です。MIRUCON_ENV=dev を設定してください（本番は未対応）。")
     os.environ.setdefault("MIRUCON_LLM_PROFILE", "orca")  # Orca 主体・Haiku なし（llm.PROFILES）。従来の表にしたいときは、空にする
     import logging
     logging.basicConfig(level=logging.INFO, format="%(message)s")  # 開発モードのワンタイムコードを表示する
